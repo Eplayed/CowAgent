@@ -254,8 +254,30 @@ class AgentLLMModel(LLMModel):
 
 class AgentBridge:
     """
-    Bridge class that integrates super Agent with COW
-    Manages multiple agent instances per session for conversation isolation
+    【核心类】AgentBridge — Agent 模式的"指挥官"
+    
+    当 config.json 中 "agent": true 时，消息不直接调模型，
+    而是通过 AgentBridge 进入 Agent 的"思考-行动"循环。
+    
+    核心职责：
+    1. 管理多个 Agent 实例（按 session_id 隔离）
+    2. 初始化 Agent（加载工具、Skills、记忆）
+    3. 将 COW 的 Context 转换为 Agent 能理解的格式
+    4. 处理 Agent 的回复（文本、文件、图片）
+    5. 持久化对话到数据库
+    
+    调用链：
+    Channel.build_reply_content()
+        → Bridge.fetch_agent_reply()
+            → AgentBridge.agent_reply()
+                → Agent.run_stream()
+                    → AgentStreamExecutor（思考-行动循环）
+    
+    session 隔离：
+    每个用户/群聊有独立的 Agent 实例，
+    互不干扰，各自维护独立的对话历史和工具状态。
+    
+    💡 这是理解"Agent 模式 vs 普通模式"差异的关键类！
     """
     
     def __init__(self, bridge: Bridge):

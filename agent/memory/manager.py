@@ -19,9 +19,41 @@ from agent.memory.summarizer import MemoryFlushManager, create_memory_files_if_n
 
 class MemoryManager:
     """
-    Memory manager with hybrid search capabilities
+    【核心类】MemoryManager — Agent 的"长期记忆"
     
-    Provides long-term memory for agents with vector and keyword search
+    这是 CowAgent 记忆系统的主入口，提供混合检索能力。
+    
+    记忆架构：
+    ┌─────────────────────────────────────────────────────────────┐
+    │  文件来源层                                                  │
+    │  ├── MEMORY.md           → 核心记忆（永远不过期）              │
+    │  ├── memory/daily/*.md   → 日级记忆（按日期衰减）             │
+    │  ├── memory/users/       → 用户级记忆                        │
+    │  └── knowledge/          → 知识库                            │
+    ├─────────────────────────────────────────────────────────────┤
+    │  处理层                                                      │
+    │  ├── TextChunker          → 文本分块（控制 token 大小）       │
+    │  ├── EmbeddingProvider    → 向量嵌入（OpenAI/LinkAI）        │
+    │  ├── MemoryStorage        → SQLite + FTS5 存储              │
+    │  └── MemoryFlushManager   → 对话摘要→日级记忆               │
+    ├─────────────────────────────────────────────────────────────┤
+    │  检索层                                                      │
+    │  ├── search_vector()      → 向量检索（语义相似）             │
+    │  ├── search_keyword()     → 关键词检索（FTS5 全文搜索）      │
+    │  └── _merge_results()     → 混合排序（加权 + 时间衰减）      │
+    └─────────────────────────────────────────────────────────────┘
+    
+    检索公式：
+    final_score = (vector_weight × vector_score + keyword_weight × keyword_score) × temporal_decay
+    
+    时间衰减（temporal decay）：
+    - MEMORY.md 等非日期文件：永不衰减（multiplier = 1.0）
+    - daily/*.md 日期文件：半衰期 30 天，越新权重越高
+    - 公式：multiplier = exp(-ln2 / 30 × age_in_days)
+    
+    💡 和你的 my-agent-cli 的区别：
+    - 你只有 SQLite 存原始消息，没有语义检索
+    - CowAgent 有向量+关键词混合检索 + 时间衰减
     """
     
     def __init__(
@@ -124,17 +156,26 @@ class MemoryManager:
         include_shared: bool = True
     ) -> List[SearchResult]:
         """
-        Search memory with hybrid search (vector + keyword)
+        【核心方法】混合检索 — Agent "回忆"的方式
         
-        Args:
-            query: Search query
-            user_id: User ID for scoped search
-            max_results: Maximum results to return
-            min_score: Minimum score threshold
-            include_shared: Include shared memories
-            
-        Returns:
-            List of search results sorted by relevance
+        同时使用向量检索和关键词检索，然后合并排序：
+        
+        1. 向量检索（如果有 embedding provider）
+           → 把 query 转成向量，在向量空间找最近的记忆块
+           → 擅长：语义相似（"今天穿什么" ≈ "天气怎么样"）
+           
+        2. 关键词检索（FTS5 全文搜索）
+           → 用 SQLite FTS5 做全文搜索
+           → 擅长：精确匹配（"API_KEY" 只匹配包含这个串的）
+           
+        3. 合并排序
+           → 对同一个记忆块，如果两种检索都命中，加权合并
+           → 加上时间衰减（越新的记忆权重越高）
+           
+        💡 为什么用混合检索？
+        - 纯向量检索可能漏掉精确匹配（如人名、专有名词）
+        - 纯关键词检索可能漏掉语义相似（如同义词）
+        - 混合检索取长补短，效果最好
         """
         max_results = max_results or self.config.max_results
         min_score = min_score or self.config.min_score

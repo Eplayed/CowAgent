@@ -28,7 +28,50 @@ class ToolResult:
 
 
 class BaseTool:
-    """Base class for all tools."""
+    """
+    【基类】所有工具的"模板"
+    
+    写一个工具只需要 3 步：
+    1. 继承 BaseTool
+    2. 设置 name、description、params（给 LLM 看的工具描述）
+    3. 实现 execute() 方法（具体执行逻辑）
+    
+    工具分两个阶段：
+    - PRE_PROCESS（默认）：需要 Agent 主动选择调用
+    - POST_PROCESS：Agent 回复后自动执行（如记忆摘要）
+    
+    工具描述格式（JSON Schema）：
+    {
+        "name": "web_search",           ← 工具名
+        "description": "搜索互联网",     ← 给 LLM 看的描述
+        "parameters": {                  ← 参数定义
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "搜索关键词"}
+            },
+            "required": ["query"]
+        }
+    }
+    
+    💡 LLM 看到这个描述，就知道"什么时候该用这个工具"、"需要传什么参数"
+    
+    示例（写一个天气工具）：
+    class WeatherTool(BaseTool):
+        name = "weather"
+        description = "查询城市天气"
+        params = {
+            "type": "object",
+            "properties": {
+                "city": {"type": "string", "description": "城市名"}
+            },
+            "required": ["city"]
+        }
+        
+        def execute(self, params):
+            city = params.get("city")
+            # 调用天气 API...
+            return ToolResult.success(result=f"{city}今天晴天")
+    """
 
     # Default decision stage is pre-process
     stage = ToolStage.PRE_PROCESS

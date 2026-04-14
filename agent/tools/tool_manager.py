@@ -9,7 +9,22 @@ from config import conf
 
 class ToolManager:
     """
-    Tool manager for managing tools.
+    【核心类】工具管理器 — Agent 的"工具箱"
+    
+    职责：
+    - 扫描并加载所有可用工具
+    - 按名称创建工具实例
+    - 管理工具配置
+    
+    加载机制：
+    1. _load_tools_from_init(): 从 agent/tools/__init__.py 的 __all__ 列表加载
+    2. _configure_tools_from_config(): 根据 config.json 配置工具
+    
+    单例模式：整个应用只有一个 ToolManager 实例
+    
+    💡 和插件系统的区别：
+    - PluginManager：管理消息处理插件（事件驱动）
+    - ToolManager：管理 Agent 可用工具（LLM 调用）
     """
     _instance = None
 

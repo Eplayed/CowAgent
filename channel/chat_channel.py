@@ -1,23 +1,34 @@
-import os
-import re
-import threading
-import time
-from asyncio import CancelledError
-from concurrent.futures import Future, ThreadPoolExecutor
-
-from bridge.context import *
-from bridge.reply import *
-from channel.channel import Channel
-from common.dequeue import Dequeue
-from common import memory
-from plugins import *
-
-try:
-    from voice.audio_convert import any_to_wav
-except Exception as e:
-    pass
-
-handler_pool = ThreadPoolExecutor(max_workers=8)  # 处理消息的线程池
+"""
+ ============================================================================
+  📨 ChatChannel — 消息处理的核心引擎
+ ============================================================================
+ 
+  这是最重要的文件之一！所有消息通道（微信/飞书/Web...）的通用处理逻辑
+  都在这里。每个具体通道继承 ChatChannel，只负责"收消息"和"发消息"，
+  中间的所有处理逻辑都在这里。
+ 
+  消息处理流水线（4 步）：
+  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+  │ 1. compose   │ →  │ 2. generate  │ →  │ 3. decorate  │ →  │ 4. send      │
+  │ 构造 Context │    │ 生成 Reply   │    │ 装饰 Reply   │    │ 发送回复     │
+  └──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘
+       ↓                    ↓                    ↓                    ↓
+  解析消息内容         插件拦截/Agent       添加前缀后缀         最终发送
+  过滤黑白名单         思考/模型调用        格式化输出
+ 
+  生产者-消费者模式：
+  - produce(): 消息入队（各通道调用）
+  - consume(): 消息出队处理（独立线程循环）
+  - 每个 session 独立队列 + 信号量控制并发
+ 
+  关键设计：
+  - 会话隔离：每个 session_id 独立消息队列
+  - 并发控制：信号量限制每个会话同时处理的消息数
+  - 优先级：# 开头的消息优先处理（管理命令）
+ 
+  💡 学习重点：理解 _compose_context → _handle → _generate_reply → _decorate_reply → _send_reply 这条流水线
+ ============================================================================
+"""
 
 
 # 抽象类, 它包含了与消息通道无关的通用处理逻辑
@@ -41,6 +52,25 @@ class ChatChannel(Channel):
 
     # 根据消息构造context，消息内容相关的触发项写在这里
     def _compose_context(self, ctype: ContextType, content, **kwargs):
+        """
+        【核心方法·第1步】构造消息上下文 — 消息的"安检站"
+        
+        做了什么：
+        1. 创建 Context 对象，包裹消息内容和元数据
+        2. 群聊白名单过滤（不在白名单的群消息直接丢弃）
+        3. 群聊前缀/关键词匹配（只有 @机器人 或特定前缀才响应）
+        4. 私聊前缀匹配
+        5. 昵称黑名单过滤
+        6. 图片生成前缀检测（如 "画 xxx" → IMAGE_CREATE 类型）
+        
+        返回 None = 消息被过滤，不需要处理
+        返回 Context = 消息通过安检，进入处理流水线
+        
+        关键概念：
+        - session_id: 会话标识（群聊=群ID，私聊=用户ID）
+        - receiver: 回复目标（发消息给谁）
+        - isgroup: 是否群聊（影响前缀匹配和回复格式）
+        """
         context = Context(ctype, content)
         context.kwargs = kwargs
         if "channel_type" not in context:
@@ -176,6 +206,19 @@ class ChatChannel(Channel):
         return context
 
     def _handle(self, context: Context):
+        """
+        【核心方法·总调度】消息处理的主入口
+        
+        就是把消息送进流水线的 3 个步骤：
+        1. _generate_reply()  → 生成回复内容
+        2. _decorate_reply()  → 装饰回复（加前缀后缀等）
+        3. _send_reply()      → 发送回复
+        
+        类比：就像餐厅出餐流程
+        1. 厨房做菜（generate）
+        2. 摆盘装饰（decorate）
+        3. 服务员上菜（send）
+        """
         if context is None or not context.content:
             return
         logger.debug("[chat_channel] handling context: {}".format(context))
@@ -192,6 +235,20 @@ class ChatChannel(Channel):
             self._send_reply(context, reply)
 
     def _generate_reply(self, context: Context, reply: Reply = Reply()) -> Reply:
+        """
+        【核心方法·第2步】生成回复 — 消息的"大脑"
+        
+        流程：
+        1. 先触发 ON_HANDLE_CONTEXT 事件 → 插件链处理
+           - 如果某个插件设置了 BREAK_PASS，直接返回插件的结果
+           - 如果某个插件设置了 BREAK，用插件修改后的 context 继续处理
+        2. 如果没被插件拦截，根据消息类型走不同逻辑：
+           - TEXT/IMAGE_CREATE → 调用 Agent 或模型生成回复
+           - VOICE → 先语音转文字，再当文字消息处理
+           - IMAGE → 保存到缓存（后续可以引用）
+        
+        💡 这是理解"插件系统怎么拦截消息"的关键方法！
+        """
         e_context = PluginManager().emit_event(
             EventContext(
                 Event.ON_HANDLE_CONTEXT,
@@ -418,6 +475,20 @@ class ChatChannel(Channel):
         return func
 
     def produce(self, context: Context):
+        """
+        【生产者】消息入队 — 收到消息后的第一步
+        
+        流程：
+        1. 根据 session_id 找到/创建该会话的消息队列
+        2. # 开头的消息插队到队首（管理命令优先处理）
+        3. 其他消息追加到队尾
+        
+        每个 session 有：
+        - Dequeue：双端队列，存放待处理的消息
+        - BoundedSemaphore：信号量，控制并发处理数（默认1，即串行处理）
+        
+        类比：就像银行取号排队，VIP客户（#命令）优先
+        """
         session_id = context["session_id"]
         with self.lock:
             if session_id not in self.sessions:
@@ -432,6 +503,20 @@ class ChatChannel(Channel):
 
     # 消费者函数，单独线程，用于从消息队列中取出消息并处理
     def consume(self):
+        """
+        【消费者】消息出队处理 — 后台不停运转的"引擎"
+        
+        这是一个无限循环，每 0.2 秒扫描一次所有会话：
+        1. 遍历所有 session_id
+        2. 尝试获取信号量（=该会话当前是否有空闲的处理线程）
+        3. 如果有空闲线程且队列不为空 → 取出消息 → 提交线程池处理
+        4. 如果信号量释放且队列为空 → 删除该会话（清理资源）
+        
+        关键：信号量保证每个会话同时只处理 concurrency_in_session 条消息
+        （默认1条，即串行处理，避免乱序）
+        
+        类比：就像医院叫号系统，一个诊室一次只看一个病人
+        """
         while True:
             with self.lock:
                 session_ids = list(self.sessions.keys())

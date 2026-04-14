@@ -1,5 +1,30 @@
 """
-Message sending channel abstract class
+ ============================================================================
+  📡 Channel 基类 — 所有消息通道的"抽象接口"
+ ============================================================================
+ 
+  继承关系：
+  Channel（抽象基类）
+      ↓
+  ChatChannel（通用聊天逻辑）
+      ↓
+  WeixinChannel / FeiShuChannel / WebChannel / ...（具体实现）
+  
+  Channel 只定义接口，具体通道需要实现：
+  - startup(): 启动通道，开始监听消息
+  - handle_text(msg): 处理收到的消息
+  - send(reply, context): 发送回复
+  
+  ChatChannel 已经实现了 handle_text 的通用逻辑，
+  具体通道只需要实现 startup() 和 send()。
+  
+  💡 为什么要这样设计？
+  因为不同通道的"收消息"和"发消息"方式完全不同：
+  - 微信：扫码登录 → WebSocket 接收消息
+  - 飞书：Webhook 回调
+  - Web：SSE 流式推送
+  但中间的"怎么处理消息"是一样的，所以抽到 ChatChannel。
+ ============================================================================
 """
 
 from bridge.bridge import Bridge
@@ -10,8 +35,17 @@ from config import conf
 
 
 class Channel(object):
-    channel_type = ""
-    NOT_SUPPORT_REPLYTYPE = [ReplyType.VOICE, ReplyType.IMAGE]
+    """
+    【抽象基类】消息通道
+    
+    所有具体通道（微信/飞书/Web...）的基类。
+    定义了三个必须实现的方法：
+    - startup(): 启动通道
+    - handle_text(msg): 处理消息
+    - send(reply, context): 发送回复
+    """
+    channel_type = ""  # 通道类型标识（如 "weixin", "feishu"）
+    NOT_SUPPORT_REPLYTYPE = [ReplyType.VOICE, ReplyType.IMAGE]  # 不支持的回复类型
 
     def __init__(self):
         import threading

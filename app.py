@@ -1,4 +1,25 @@
 # encoding:utf-8
+"""
+ ============================================================================
+  🚀 CowAgent 入口文件 — 一切从这里开始
+ ============================================================================
+ 
+  启动流程（就像开一家餐厅）：
+  1. load_config()        → 读取配置（准备菜单和食材）
+  2. ChannelManager       → 创建通道管理器（雇佣大堂经理）
+  3. channel_names        → 确定要开哪些"窗口"（微信/飞书/Web...）
+  4. mgr.start()          → 每个窗口开一个线程（同时营业）
+  
+  核心设计：
+  - 每个通道独立线程，互不阻塞（就像多个收银台）
+  - Web 控制台默认启动，方便调试
+  - 插件在 first_start 时加载（只在开门时装一次）
+ 
+  和你的 my-agent-cli 的区别：
+  - 你只有 Web 一个入口，CowAgent 同时开 10 个入口
+  - 你用 FastAPI 统一处理，CowAgent 用线程隔离
+ ============================================================================
+"""
 
 import os
 import signal
@@ -37,17 +58,29 @@ def _parse_channel_type(raw) -> list:
 
 class ChannelManager:
     """
-    Manage the lifecycle of multiple channels running concurrently.
-    Each channel.startup() runs in its own daemon thread.
-    The web channel is started as default console unless explicitly disabled.
+    【核心类】多通道管理器 — CowAgent 的"大堂经理"
+    
+    职责：
+    - 管理多个消息通道的生命周期（创建/启动/停止/重启）
+    - 每个通道在独立守护线程中运行，互不干扰
+    - Web 控制台默认启动，作为管理入口
+    
+    设计模式：
+    - 工厂模式创建通道（channel_factory.create_channel）
+    - 线程隔离保证通道间不阻塞
+    - 锁保护共享状态，防止并发问题
+    
+    类比：
+    - 就像餐厅的大堂经理，同时管理堂食、外卖、小程序三个入口
+    - 每个入口有自己的服务员（线程），互不影响
     """
 
     def __init__(self):
-        self._channels = {}        # channel_name -> channel instance
-        self._threads = {}         # channel_name -> thread
-        self._primary_channel = None
-        self._lock = threading.Lock()
-        self.cloud_mode = False    # set to True when cloud client is active
+        self._channels = {}        # 通道名 → 通道实例（如 "web" → WebChannel）
+        self._threads = {}         # 通道名 → 运行线程
+        self._primary_channel = None  # 主通道（第一个非 Web 通道）
+        self._lock = threading.Lock()  # 线程锁，保护并发操作
+        self.cloud_mode = False    # 云部署模式标记
 
     @property
     def channel(self):
@@ -59,8 +92,21 @@ class ChannelManager:
 
     def start(self, channel_names: list, first_start: bool = False):
         """
-        Create and start one or more channels in sub-threads.
-        If first_start is True, plugins and linkai client will also be initialized.
+        【核心方法】启动多个通道 — 开门营业！
+        
+        流程：
+        1. 用工厂模式创建每个通道实例
+        2. 如果是首次启动，加载插件
+        3. Web 通道优先启动（日志更干净）
+        4. 每个通道在独立守护线程中运行
+        
+        关键点：
+        - first_start=True 时才加载插件（只加载一次）
+        - daemon=True 线程随主线程退出
+        - Web 控制台最先启动，其余通道延迟 0.1s 避免 CPU 峰值
+        
+        类比：就像开商场，先把管理办公室（Web）开起来，
+             再逐个开放各个门店（微信/飞书/钉钉...）
         """
         with self._lock:
             channels = []
@@ -275,6 +321,24 @@ def sigterm_handler_wrap(_signo):
 
 
 def run():
+    """
+    【入口函数】CowAgent 的 main() — 一切的起点
+    
+    启动流程：
+    1. 加载配置文件
+    2. 注册信号处理（Ctrl+C 优雅退出）
+    3. 解析要启动的通道列表
+    4. Web 控制台默认加入（除非显式禁用）
+    5. 创建 ChannelManager 并启动
+    6. 主线程挂起，等待信号
+    
+    通道配置格式支持：
+    - 单字符串: "feishu"
+    - 逗号分隔: "feishu, dingtalk"  
+    - 列表: ["feishu", "dingtalk"]
+    
+    如果什么都没配，默认只启动 Web 控制台
+    """
     global _channel_mgr
     try:
         # load config

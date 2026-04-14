@@ -11,6 +11,37 @@ from agent.tools.base_tool import BaseTool, ToolStage
 
 
 class Agent:
+    """
+    【核心类】Agent — CowAgent 的"大脑"
+    
+    这是 Agent 模式的核心，负责"思考-行动"循环：
+    
+    ┌──────────────────────────────────────────────────────────┐
+    │  Agent.run_stream() 核心循环：                             │
+    │                                                          │
+    │  用户消息 → 构建 System Prompt（含工具定义+Skills）          │
+    │     ↓                                                    │
+    │  调用 LLM → LLM 返回文本 or 工具调用                        │
+    │     ↓                                                    │
+    │  如果是文本 → 直接返回给用户                                │
+    │  如果是工具调用 → 执行工具 → 把结果喂回 LLM → 继续循环      │
+    │     ↓                                                    │
+    │  重复直到 LLM 返回最终文本 or 达到最大步数                   │
+    └──────────────────────────────────────────────────────────┘
+    
+    关键属性：
+    - system_prompt: 系统提示词（每次运行前动态重建）
+    - model: LLM 模型实例（AgentLLMModel，桥接到 COW 的 bot 系统）
+    - tools: 可用工具列表（bash/browser/read/write/memory/scheduler...）
+    - messages: 对话历史（跨轮次保持，支持上下文压缩）
+    - skill_manager: Skills 管理器（渐进式加载技能描述到 prompt）
+    - memory_manager: 记忆管理器（长期记忆的存取和检索）
+    
+    和你的 my-agent-cli 的区别：
+    - 你用 LangGraph StateGraph 管理状态，CowAgent 用消息列表
+    - 你有 5 种多 Agent 模式，CowAgent 只有单 Agent
+    - CowAgent 有完整的工具/Skills/记忆系统，你只有基础实现
+    """
     def __init__(self, system_prompt: str, description: str = "AI Agent", model: LLMModel = None,
                  tools=None, output_mode="print", max_steps=100, max_context_tokens=None, 
                  context_reserve_tokens=None, memory_manager=None, name: str = None,
@@ -367,31 +398,45 @@ class Agent:
 
     def run_stream(self, user_message: str, on_event=None, clear_history: bool = False, skill_filter=None) -> str:
         """
-        Execute single agent task with streaming (based on tool-call)
-
-        This method supports:
-        - Streaming output
-        - Multi-turn reasoning based on tool-call
-        - Event callbacks
-        - Persistent conversation history across calls
-
+        【核心方法】Agent 的"思考-行动"循环
+        
+        这就是 Agent 的主循环！理解了这个方法，就理解了 Agent 的工作原理。
+        
+        流程详解：
+        
+        1. 清理历史（如果 clear_history=True）
+        
+        2. 动态构建完整 System Prompt
+           → 重新从磁盘读取 AGENT.md / USER.md / RULE.md
+           → 刷新 Skills 列表
+           → 组装工具定义、记忆上下文、运行时信息
+           💡 每次调用都重建，确保修改立即生效！
+        
+        3. 创建 AgentStreamExecutor 执行器
+           → 把消息历史、工具列表、System Prompt 传进去
+        
+        4. 执行器运行流式循环：
+           while 没有最终回复 and 未超过最大步数:
+               调用 LLM(messages + tools)
+               if LLM 返回文本 → 最终回复，退出
+               if LLM 返回工具调用 → 执行工具 → 结果追加到 messages → 继续
+               
+           💡 这就是 ReAct 模式（Reasoning + Acting）！
+        
+        5. 同步消息历史回 Agent 实例
+           → 跨轮次保持上下文
+        
+        6. 执行后处理工具（POST_PROCESS 阶段的工具）
+           → 如自动记忆摘要
+        
         Args:
-            user_message: User message
-            on_event: Event callback function callback(event: dict)
-                     event = {"type": str, "timestamp": float, "data": dict}
-            clear_history: If True, clear conversation history before this call (default: False)
-            skill_filter: Optional list of skill names to include in this run
-
+            user_message: 用户消息
+            on_event: 事件回调（流式输出、工具调用通知等）
+            clear_history: 是否清除对话历史
+            skill_filter: 指定本次运行使用哪些 Skills
+            
         Returns:
-            Final response text
-
-        Example:
-            # Multi-turn conversation with memory
-            response1 = agent.run_stream("My name is Alice")
-            response2 = agent.run_stream("What's my name?")  # Will remember Alice
-
-            # Single-turn without memory
-            response = agent.run_stream("Hello", clear_history=True)
+            最终回复文本
         """
         # Clear history if requested
         if clear_history:

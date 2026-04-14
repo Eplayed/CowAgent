@@ -11,6 +11,34 @@ from voice.factory import create_voice
 
 @singleton
 class Bridge(object):
+    """
+    【核心类】Bridge — 模型路由的"总机"
+    
+    Bridge 是"消息处理层"和"模型调用层"之间的桥梁。
+    它决定用什么模型、什么 API 来处理请求。
+    
+    架构位置：
+    ChatChannel._generate_reply()
+        ↓ 调用
+    Channel.build_reply_content()
+        ↓ 调用
+    Bridge.fetch_reply_content()    ← 普通模式：直接调模型
+    Bridge.fetch_agent_reply()      ← Agent 模式：先思考再行动
+    
+    模型路由逻辑：
+    根据配置中的 model 名称前缀，自动选择对应的 bot 类型：
+    - "claude" → ClaudeAPI
+    - "gpt" → OpenAI
+    - "qwen"/"qwq" → 通义千问
+    - "gemini" → Gemini
+    - "glm" → 智谱
+    - "deepseek" → DeepSeek
+    ...
+    
+    💡 和你的 my-agent-cli 的区别：
+    - 你直接调 OpenAI SDK，没有路由层
+    - CowAgent 通过 Bridge + BotFactory 支持十几个模型供应商
+    """
     def __init__(self):
         self.btype = {
             "chat": const.OPENAI,

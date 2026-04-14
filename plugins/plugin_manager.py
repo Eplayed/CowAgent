@@ -1,4 +1,37 @@
 # encoding:utf-8
+"""
+ ============================================================================
+  🔌 PluginManager — 插件系统的"调度中心"
+ ============================================================================
+ 
+  这是 CowAgent 最精妙的设计之一！理解了插件系统，你就理解了
+  CowAgent 是怎么做到"不改源码就能加功能"的。
+ 
+  核心机制：
+  ┌────────────────────────────────────────────────────────────────┐
+  │  消息到达 → emit_event(ON_HANDLE_CONTEXT)                      │
+  │     ↓                                                          │
+  │  按优先级依次调用插件：                                          │
+  │  插件A (priority=100) → 插件B (priority=50) → 插件C (priority=0) │
+  │     ↓          ↓            ↓                                  │
+  │  CONTINUE   BREAK_PASS    BREAK                                │
+  │  (继续传)   (拦截，不调模型) (拦截，调模型)                        │
+  └────────────────────────────────────────────────────────────────┘
+ 
+  三个关键动作（EventAction）：
+  - CONTINUE：继续传给下一个插件（默认）
+  - BREAK：事件结束，进入默认处理逻辑（调模型/Agent）
+  - BREAK_PASS：事件结束，跳过默认处理逻辑（插件已经处理完了）
+ 
+  写一个插件只需要：
+  1. 继承 Plugin 类
+  2. 用 @register 装饰器注册
+  3. 在 __init__ 中注册事件处理函数
+  4. 在处理函数中设置 e_context.action 和 e_context["reply"]
+ 
+  💡 学习重点：理解 emit_event 的"责任链"模式
+ ============================================================================
+"""
 
 import importlib
 import importlib.util
@@ -85,6 +118,22 @@ class PluginManager:
             logger.error(e)
 
     def scan_plugins(self):
+        """
+        【核心方法】扫描并加载插件 — "自动发现"机制
+        
+        做了什么：
+        1. 扫描 plugins/ 目录下的所有子目录
+        2. 找到包含 __init__.py 的子目录（合法的 Python 包）
+        3. 动态 import 该包 → 触发 @register 装饰器 → 插件自动注册
+        4. 已加载的插件（除 godcmd）支持热重载（reload）
+        
+        为什么能自动发现？
+        因为每个插件的 __init__.py 里都有 @register 装饰器，
+        import 的时候装饰器就会执行，把插件类注册到 PluginManager。
+        
+        类比：就像手机 App Store 扫描已安装的 App，
+             每个 App 的 manifest 声明自己能处理什么事件。
+        """
         logger.debug("Scanning plugins ...")
         plugins_dir = "./plugins"
         raws = [self.plugins[name] for name in self.plugins]
@@ -188,6 +237,33 @@ class PluginManager:
         self.activate_plugins()
 
     def emit_event(self, e_context: EventContext, *args, **kwargs):
+        """
+        【核心方法】事件分发 — 插件系统的"心脏"
+        
+        按优先级从高到低，依次调用注册了该事件的插件处理函数。
+        如果某个插件设置了 BREAK 或 BREAK_PASS，停止传递。
+        
+        流程图：
+        emit_event(ON_HANDLE_CONTEXT, {context, reply})
+            │
+            ▼ 优先级100的插件 → CONTINUE
+            │
+            ▼ 优先级50的插件 → BREAK
+            │
+            ✋ 停止传递，不再调用后续插件
+        
+        三种 EventAction 的效果：
+        ┌─────────────┬────────────────┬─────────────────────┐
+        │ Action      │ 还调用后续插件？ │ 还走默认处理逻辑？   │
+        ├─────────────┼────────────────┼─────────────────────┤
+        │ CONTINUE    │ ✅ 是           │ ✅ 是               │
+        │ BREAK       │ ❌ 否           │ ✅ 是               │
+        │ BREAK_PASS  │ ❌ 否           │ ❌ 否（插件已处理完）│
+        └─────────────┴────────────────┴─────────────────────┘
+        
+        💡 这就是"责任链模式"：每个插件都有机会处理消息，
+           也可以中断链路。优先级高的插件"先说话"。
+        """
         if e_context.event in self.listening_plugins:
             for name in self.listening_plugins[e_context.event]:
                 if self.plugins[name].enabled and e_context.action == EventAction.CONTINUE:
