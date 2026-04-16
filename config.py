@@ -277,6 +277,22 @@ config = Config()
 
 
 def drag_sensitive(config):
+    """
+    对配置信息中的敏感字段进行脱敏处理。
+    
+    遍历配置中的所有键，如果键名包含 "key" 或 "secret"，
+    则将对应的字符串值替换为：前3个字符 + ***** + 后3个字符。
+    
+    支持传入 JSON 字符串或字典两种格式：
+    - str: 解析为字典后脱敏，返回格式化的 JSON 字符串
+    - dict: 直接脱敏，返回脱敏后的字典副本
+    
+    Args:
+        config: 配置信息，可以是 JSON 字符串或字典
+        
+    Returns:
+        脱敏后的配置（与输入类型对应），处理异常时返回原始配置
+    """
     try:
         if isinstance(config, str):
             conf_dict: dict = json.loads(config)

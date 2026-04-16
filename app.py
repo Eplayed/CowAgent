@@ -38,16 +38,32 @@ _channel_mgr = None
 
 
 def get_channel_manager():
+    """
+    获取全局通道管理器实例。
+    
+    其他模块通过此函数访问 ChannelManager，
+    避免直接引用模块级私有变量 _channel_mgr。
+    
+    Returns:
+        ChannelManager | None: 通道管理器实例，未初始化时返回 None
+    """
     return _channel_mgr
 
 
 def _parse_channel_type(raw) -> list:
     """
-    Parse channel_type config value into a list of channel names.
-    Supports:
-      - single string: "feishu"
-      - comma-separated string: "feishu, dingtalk"
-      - list: ["feishu", "dingtalk"]
+    将配置中的 channel_type 值解析为通道名称列表。
+    
+    支持三种输入格式：
+    - 单个字符串: "feishu" → ["feishu"]
+    - 逗号分隔字符串: "feishu, dingtalk" → ["feishu", "dingtalk"]
+    - 列表: ["feishu", "dingtalk"] → 原样返回（去除空白）
+    
+    Args:
+        raw: 配置中的 channel_type 原始值，可以是 str 或 list
+        
+    Returns:
+        list: 通道名称列表，无法解析时返回空列表
     """
     if isinstance(raw, list):
         return [ch.strip() for ch in raw if ch.strip()]
@@ -84,10 +100,26 @@ class ChannelManager:
 
     @property
     def channel(self):
-        """Return the primary (first non-web) channel for backward compatibility."""
+        """
+        获取主通道实例（向后兼容属性）。
+        
+        主通道是第一个非 Web 的通道，用于旧代码中直接访问 channel 的场景。
+        
+        Returns:
+            Channel | None: 主通道实例
+        """
         return self._primary_channel
 
     def get_channel(self, channel_name: str):
+        """
+        根据通道名称获取对应的通道实例。
+        
+        Args:
+            channel_name: 通道名称，如 "web"、"feishu"、"dingtalk"
+            
+        Returns:
+            Channel | None: 对应的通道实例，不存在时返回 None
+        """
         return self._channels.get(channel_name)
 
     def start(self, channel_names: list, first_start: bool = False):
@@ -161,6 +193,16 @@ class ChannelManager:
                 logger.debug(f"[ChannelManager] Channel '{name}' started in sub-thread")
 
     def _run_channel(self, name: str, channel):
+        """
+        在子线程中运行单个通道。
+        
+        作为线程的 target 函数，调用通道的 startup() 方法。
+        如果启动过程中抛出异常，记录错误日志但不影响其他通道。
+        
+        Args:
+            name: 通道名称，用于日志标识
+            channel: 通道实例，需要实现 startup() 方法
+        """
         try:
             channel.startup()
         except Exception as e:
@@ -169,8 +211,19 @@ class ChannelManager:
 
     def stop(self, channel_name: str = None):
         """
-        Stop channel(s). If channel_name is given, stop only that channel;
-        otherwise stop all channels.
+        停止通道。
+        
+        如果指定了 channel_name，只停止该通道；否则停止所有通道。
+        
+        停止流程：
+        1. 在锁内从字典中移除通道和线程引用（避免并发问题）
+        2. 在锁外执行实际的停止操作（避免死锁）
+        3. 优先调用通道的 stop() 方法（优雅停止）
+        4. 等待线程退出（超时 5 秒）
+        5. 超时未退出则强制中断线程
+        
+        Args:
+            channel_name: 要停止的通道名称，None 表示停止全部
         """
         # Pop under lock, then stop outside lock to avoid deadlock
         with self._lock:
@@ -209,7 +262,19 @@ class ChannelManager:
 
     @staticmethod
     def _interrupt_thread(th: threading.Thread, name: str):
-        """Raise SystemExit in target thread to break blocking loops like start_forever."""
+        """
+        强制中断目标线程。
+        
+        通过 CPython 的 PyThreadState_SetAsyncExc 向目标线程注入 SystemExit 异常，
+        用于打断 start_forever() 等阻塞循环。
+        
+        注意：这是一种非常规手段，仅在优雅停止失败后使用。
+        依赖 CPython 实现，不保证在其他 Python 解释器上可用。
+        
+        Args:
+            th: 要中断的线程对象
+            name: 通道名称，用于日志标识
+        """
         import ctypes
         try:
             tid = th.ident
@@ -228,8 +293,13 @@ class ChannelManager:
 
     def restart(self, new_channel_name: str):
         """
-        Restart a single channel with a new channel type.
-        Can be called from any thread (e.g. linkai config callback).
+        重启指定通道。
+        
+        流程：停止旧通道 → 清除单例缓存 → 等待 1 秒 → 启动新通道。
+        可以从任意线程调用（如 linkai 配置回调中）。
+        
+        Args:
+            new_channel_name: 要重启的通道名称
         """
         logger.info(f"[ChannelManager] Restarting channel to '{new_channel_name}'...")
         self.stop(new_channel_name)
@@ -240,8 +310,13 @@ class ChannelManager:
 
     def add_channel(self, channel_name: str):
         """
-        Dynamically add and start a new channel.
-        If the channel is already running, restart it instead.
+        动态添加并启动一个新通道。
+        
+        如果该通道已在运行，则执行重启操作。
+        适用于运行时动态扩展通道的场景。
+        
+        Args:
+            channel_name: 要添加的通道名称
         """
         with self._lock:
             if channel_name in self._channels:
@@ -256,7 +331,12 @@ class ChannelManager:
 
     def remove_channel(self, channel_name: str):
         """
-        Dynamically stop and remove a running channel.
+        动态移除一个正在运行的通道。
+        
+        停止通道并从管理器中删除。如果通道不存在，记录警告日志。
+        
+        Args:
+            channel_name: 要移除的通道名称
         """
         with self._lock:
             if channel_name not in self._channels:
@@ -269,8 +349,19 @@ class ChannelManager:
 
 def _clear_singleton_cache(channel_name: str):
     """
-    Clear the singleton cache for the channel class so that
-    a new instance can be created with updated config.
+    清除通道类的单例缓存，使下次创建时能使用最新配置。
+    
+    通道类通常使用闭包实现单例模式（闭包中有一个 dict 缓存实例）。
+    此函数通过反射找到闭包中的缓存字典并清空它，
+    这样 channel_factory.create_channel() 就会创建新实例。
+    
+    实现原理：
+    1. 根据通道名查找对应的类路径
+    2. 动态导入模块，获取类对象
+    3. 遍历闭包的 __closure__，找到 dict 类型的 cell 并清空
+    
+    Args:
+        channel_name: 通道名称，如 "web"、"feishu" 等
     """
     cls_map = {
         "web": "channel.web.web_channel.WebChannel",
@@ -308,6 +399,18 @@ def _clear_singleton_cache(channel_name: str):
 
 
 def sigterm_handler_wrap(_signo):
+    """
+    为指定信号注册优雅退出处理器。
+    
+    包装原有的信号处理器，在退出前先保存用户数据，
+    然后调用原处理器（如果存在），最后退出程序。
+    
+    用于处理 SIGINT（Ctrl+C）和 SIGTERM（kill 命令），
+    确保程序不会因为突然中断而丢失数据。
+    
+    Args:
+        _signo: 要注册的信号编号（如 signal.SIGINT、signal.SIGTERM）
+    """
     old_handler = signal.getsignal(_signo)
 
     def func(_signo, _stack_frame):

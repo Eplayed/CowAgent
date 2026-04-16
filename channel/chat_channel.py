@@ -30,6 +30,29 @@
  ============================================================================
 """
 
+import os
+import re
+import threading
+import time
+from asyncio import CancelledError
+from concurrent.futures import Future, ThreadPoolExecutor
+
+from bridge.context import *
+from bridge.reply import *
+from channel.channel import Channel
+from common.dequeue import Dequeue
+from common import memory
+from common.log import logger
+from config import conf
+from plugins import *
+
+try:
+    from voice.audio_convert import any_to_wav
+except Exception as e:
+    pass
+
+handler_pool = ThreadPoolExecutor(max_workers=8)  # 处理消息的线程池
+
 
 # 抽象类, 它包含了与消息通道无关的通用处理逻辑
 class ChatChannel(Channel):
