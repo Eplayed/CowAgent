@@ -45,6 +45,7 @@ const I18N = {
         config_save: '保存', config_saved: '已保存',
         config_save_error: '保存失败',
         config_custom_option: '自定义...',
+        config_custom_tip: '接口需遵循 OpenAI API 协议',
         config_security: '安全设置', config_password: '访问密码',
         config_password_hint: '留空则不启用密码保护',
         config_password_changed: '密码已更新，请重新登录',
@@ -130,6 +131,7 @@ const I18N = {
         config_save: 'Save', config_saved: 'Saved',
         config_save_error: 'Save failed',
         config_custom_option: 'Custom...',
+        config_custom_tip: 'API must follow OpenAI protocol.',
         config_security: 'Security', config_password: 'Password',
         config_password_hint: 'Leave empty to disable password protection',
         config_password_changed: 'Password updated, please re-login',
@@ -1626,6 +1628,7 @@ function newChat() {
     if (panel && !sessionPanelOpen) {
         sessionPanelOpen = true;
         panel.classList.remove('hidden');
+        _showSessionOverlay();
         _persistPanelState();
     }
     const newSid = sessionId;
@@ -1643,11 +1646,40 @@ function _persistPanelState() {
     localStorage.setItem(SESSION_PANEL_KEY, sessionPanelOpen ? '1' : '0');
 }
 
+function _isMobileView() {
+    return window.innerWidth <= 768;
+}
+
+function _showSessionOverlay() {
+    if (!_isMobileView()) return;
+    const overlay = document.getElementById('session-panel-overlay');
+    if (overlay) overlay.classList.remove('hidden');
+}
+
+function _hideSessionOverlay() {
+    const overlay = document.getElementById('session-panel-overlay');
+    if (overlay) overlay.classList.add('hidden');
+}
+
+function closeSessionPanel() {
+    const panel = document.getElementById('session-panel');
+    if (!panel || !sessionPanelOpen) return;
+    sessionPanelOpen = false;
+    panel.classList.add('hidden');
+    _hideSessionOverlay();
+    _persistPanelState();
+}
+
 function toggleSessionPanel() {
     const panel = document.getElementById('session-panel');
     if (!panel) return;
     sessionPanelOpen = !sessionPanelOpen;
     panel.classList.toggle('hidden', !sessionPanelOpen);
+    if (sessionPanelOpen) {
+        _showSessionOverlay();
+    } else {
+        _hideSessionOverlay();
+    }
     _persistPanelState();
     if (sessionPanelOpen) loadSessionList();
 }
@@ -1657,6 +1689,7 @@ function openSessionPanel() {
     if (!panel || sessionPanelOpen) return;
     sessionPanelOpen = true;
     panel.classList.remove('hidden');
+    _showSessionOverlay();
     _persistPanelState();
     loadSessionList();
 }
@@ -1664,11 +1697,13 @@ function openSessionPanel() {
 function _restoreSessionPanel() {
     const panel = document.getElementById('session-panel');
     if (!panel) return;
-    if (sessionPanelOpen) {
+    if (sessionPanelOpen && !_isMobileView()) {
         panel.classList.remove('hidden');
+        _showSessionOverlay();
         loadSessionList();
     } else {
         panel.classList.add('hidden');
+        _hideSessionOverlay();
     }
 }
 
@@ -1860,6 +1895,7 @@ function switchSession(newSessionId) {
         el.classList.toggle('active', el.dataset.sessionId === sessionId);
     });
 
+    if (_isMobileView()) closeSessionPanel();
     if (currentView !== 'chat') navigateTo('chat');
 }
 
@@ -2123,6 +2159,9 @@ function onProviderChange(pid) {
     cfgProviderValue = pid || getDropdownValue(document.getElementById('cfg-provider'));
     const p = configProviders[cfgProviderValue];
     if (!p) return;
+
+    const customTip = document.getElementById('cfg-custom-tip');
+    if (customTip) customTip.classList.toggle('hidden', cfgProviderValue !== 'custom');
 
     const modelEl = document.getElementById('cfg-model-select');
     const modelOpts = (p.models || []).map(m => ({ value: m, label: m }));
@@ -3581,19 +3620,28 @@ function renderKnowledgeTree(tree, filter) {
     const container = document.getElementById('knowledge-tree');
     container.innerHTML = '';
     const lowerFilter = (filter || '').toLowerCase();
+    _renderKnowledgeGroups(container, tree, '', lowerFilter, 0);
+}
 
-    tree.forEach(group => {
-        const files = group.files.filter(f =>
+function _renderKnowledgeGroups(container, groups, parentPath, lowerFilter, depth) {
+    const indent = depth * 12;
+    groups.forEach(group => {
+        const groupPath = parentPath ? parentPath + '/' + group.dir : group.dir;
+        const files = (group.files || []).filter(f =>
             !lowerFilter || f.title.toLowerCase().includes(lowerFilter) || f.name.toLowerCase().includes(lowerFilter)
         );
-        if (files.length === 0 && lowerFilter) return;
+        const children = group.children || [];
+        const hasMatchingChildren = lowerFilter ? _hasFilterMatch(children, lowerFilter) : children.length > 0;
+        if (files.length === 0 && !hasMatchingChildren && lowerFilter) return;
 
         const div = document.createElement('div');
         div.className = 'knowledge-tree-group open';
 
+        const fileCount = _countFiles(group);
         const btn = document.createElement('button');
         btn.className = 'knowledge-tree-group-btn';
-        btn.innerHTML = `<i class="fas fa-chevron-right chevron"></i><i class="fas fa-folder text-amber-400 text-[11px]"></i><span>${escapeHtml(group.dir)}</span><span class="ml-auto text-[10px] text-slate-400">${files.length}</span>`;
+        btn.style.paddingLeft = (8 + indent) + 'px';
+        btn.innerHTML = `<i class="fas fa-chevron-right chevron"></i><i class="fas fa-folder text-amber-400 text-[11px]"></i><span>${escapeHtml(group.dir)}</span><span class="ml-auto text-[10px] text-slate-400">${fileCount}</span>`;
         btn.onclick = () => div.classList.toggle('open');
         div.appendChild(btn);
 
@@ -3601,16 +3649,38 @@ function renderKnowledgeTree(tree, filter) {
         items.className = 'knowledge-tree-group-items';
         files.forEach(f => {
             const fbtn = document.createElement('button');
-            const fpath = group.dir + '/' + f.name;
+            const fpath = groupPath + '/' + f.name;
             fbtn.className = 'knowledge-tree-file' + (_knowledgeCurrentFile === fpath ? ' active' : '');
             fbtn.dataset.path = fpath;
+            fbtn.style.paddingLeft = (24 + indent) + 'px';
             fbtn.innerHTML = `<i class="fas fa-file-lines text-[10px] text-slate-400"></i><span class="truncate">${escapeHtml(f.title)}</span>`;
             fbtn.onclick = () => openKnowledgeFile(fpath, f.title);
             items.appendChild(fbtn);
         });
+        if (children.length > 0) {
+            _renderKnowledgeGroups(items, children, groupPath, lowerFilter, depth + 1);
+        }
         div.appendChild(items);
         container.appendChild(div);
     });
+}
+
+function _hasFilterMatch(groups, lowerFilter) {
+    for (const g of groups) {
+        for (const f of (g.files || [])) {
+            if (f.title.toLowerCase().includes(lowerFilter) || f.name.toLowerCase().includes(lowerFilter)) return true;
+        }
+        if (_hasFilterMatch(g.children || [], lowerFilter)) return true;
+    }
+    return false;
+}
+
+function _countFiles(group) {
+    let count = (group.files || []).length;
+    for (const child of (group.children || [])) {
+        count += _countFiles(child);
+    }
+    return count;
 }
 
 function filterKnowledgeTree(query) {
@@ -3693,12 +3763,19 @@ function bindChatKnowledgeLinks(container) {
 }
 
 function _findKnowledgeFileByName(filename) {
-    for (const group of _knowledgeTreeData) {
-        for (const f of group.files) {
+    return _searchFileInGroups(_knowledgeTreeData, '', filename);
+}
+
+function _searchFileInGroups(groups, parentPath, filename) {
+    for (const group of groups) {
+        const groupPath = parentPath ? parentPath + '/' + group.dir : group.dir;
+        for (const f of (group.files || [])) {
             if (f.name === filename) {
-                return { path: group.dir + '/' + f.name, title: f.title };
+                return { path: groupPath + '/' + f.name, title: f.title };
             }
         }
+        const found = _searchFileInGroups(group.children || [], groupPath, filename);
+        if (found) return found;
     }
     return null;
 }

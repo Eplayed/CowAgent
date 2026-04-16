@@ -91,39 +91,9 @@ def _get_upload_dir() -> str:
 
 
 def _generate_session_title(user_message: str, assistant_reply: str = "") -> str:
-    """
-    Generate a short session title by calling the current bot's reply_text.
-    """
-    import re
-    fallback = user_message[:50].split("\n")[0].strip() or "New Chat"
-    try:
-        from bridge.bridge import Bridge
-        from models.session_manager import Session
-        bot = Bridge().get_bot("chat")
-
-        prompt_parts = [f"User: {user_message[:300]}"]
-        if assistant_reply:
-            prompt_parts.append(f"Assistant: {assistant_reply[:300]}")
-
-        session = Session("__title_gen__", system_prompt="")
-        session.messages = [
-            {"role": "user", "content": (
-                "Generate a very short title (max 15 characters for Chinese, max 6 words for English) "
-                "summarizing this conversation. Return ONLY the title text, nothing else.\n\n"
-                + "\n".join(prompt_parts)
-            )}
-        ]
-
-        result = bot.reply_text(session)
-        raw = (result.get("content") or "").strip()
-        # Strip <think>...</think> reasoning blocks
-        title = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip().strip('"\'')
-        logger.info(f"[WebChannel] Title generation result: '{title}' (len={len(title)})")
-        if title and len(title) <= 50:
-            return title
-    except Exception as e:
-        logger.warning(f"[WebChannel] Title generation failed: {e}")
-    return fallback
+    """Delegate to the shared SessionService implementation."""
+    from agent.chat.session_service import generate_session_title
+    return generate_session_title(user_message, assistant_reply)
 
 
 class WebMessage(ChatMessage):
@@ -831,15 +801,22 @@ class ConfigHandler:
             "api_base_default": None,
             "models": _RECOMMENDED_MODELS,
         }),
+        ("custom", {
+            "label": "自定义",
+            "api_key_field": "custom_api_key",
+            "api_base_key": "custom_api_base",
+            "api_base_default": "",
+            "models": [],
+        }),
     ])
 
     EDITABLE_KEYS = {
         "model", "bot_type", "use_linkai",
         "open_ai_api_base", "deepseek_api_base", "claude_api_base", "gemini_api_base",
-        "zhipu_ai_api_base", "moonshot_base_url", "ark_base_url",
+        "zhipu_ai_api_base", "moonshot_base_url", "ark_base_url", "custom_api_base",
         "open_ai_api_key", "deepseek_api_key", "claude_api_key", "gemini_api_key",
         "zhipu_ai_api_key", "dashscope_api_key", "moonshot_api_key",
-        "ark_api_key", "minimax_api_key", "linkai_api_key",
+        "ark_api_key", "minimax_api_key", "linkai_api_key", "custom_api_key",
         "agent_max_context_tokens", "agent_max_context_turns", "agent_max_steps",
         "enable_thinking", "web_password",
     }

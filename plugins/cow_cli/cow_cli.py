@@ -174,7 +174,7 @@ class CowCliPlugin(Plugin):
     # status
     # ------------------------------------------------------------------
 
-    def _cmd_status(self, args: str, e_context: EventContext, session_id: str = "") -> str:
+    def _cmd_status(self, args: str, e_context: EventContext, session_id: str = "", **_) -> str:
         from config import conf
 
         cfg = conf()
@@ -256,7 +256,7 @@ class CowCliPlugin(Plugin):
     # context
     # ------------------------------------------------------------------
 
-    def _cmd_context(self, args: str, e_context: EventContext, session_id: str = "") -> str:
+    def _cmd_context(self, args: str, e_context: EventContext, session_id: str = "", **_) -> str:
         session_id = self._get_session_id(e_context, fallback=session_id)
         agent = self._get_agent(session_id)
 
@@ -379,11 +379,14 @@ class CowCliPlugin(Plugin):
                 new_val = value_str
 
         updates = {key: new_val}
+        old_bot_type = conf().get("bot_type", "")
 
-        if key == "model" and conf().get("bot_type"):
-            resolved = self._resolve_bot_type_for_model(str(new_val))
-            if resolved:
-                updates["bot_type"] = resolved
+        if key == "model" and old_bot_type:
+            from common import const
+            if old_bot_type not in (const.CUSTOM,):
+                resolved = self._resolve_bot_type_for_model(str(new_val))
+                if resolved:
+                    updates["bot_type"] = resolved
 
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         config_path = os.path.join(project_root, "config.json")
@@ -402,8 +405,8 @@ class CowCliPlugin(Plugin):
             logger.warning(f"[CowCli] config reload warning: {e}")
 
         result = f"✅ 配置已更新\n\n  {key}: {old_val} → {new_val}"
-        if "bot_type" in updates and updates["bot_type"] != conf().get("bot_type"):
-            result += f"\n  bot_type: → {updates['bot_type']}"
+        if "bot_type" in updates and updates["bot_type"] != old_bot_type:
+            result += f"\n  bot_type: {old_bot_type} → {updates['bot_type']}"
         return result
 
     @staticmethod
@@ -885,7 +888,6 @@ class CowCliPlugin(Plugin):
         if agent and agent.memory_manager:
             flush_mgr = agent.memory_manager.flush_manager
 
-        # Fallback: construct a temporary MemoryFlushManager when agent is not yet initialized
         if not flush_mgr:
             try:
                 flush_mgr = self._create_standalone_flush_manager()
@@ -895,23 +897,37 @@ class CowCliPlugin(Plugin):
         if not flush_mgr.llm_model:
             return "⚠️ 未配置 LLM 模型，无法执行记忆蒸馏"
 
+        # SaaS (e_context is None): run synchronously, return full result
+        if e_context is None:
+            return self._memory_dream_sync(flush_mgr, days)
+
+        # Local channels: run in background, notify via channel.send()
         is_web = self._is_web_channel(e_context)
 
         def _run():
             try:
                 result = flush_mgr.deep_dream(lookback_days=days, force=True)
                 if result:
-                    msg = self._build_dream_result(flush_mgr, is_web)
-                    self._notify(e_context, msg)
+                    self._notify(e_context, self._build_dream_result(flush_mgr, is_web))
                 else:
                     self._notify(e_context, "💤 记忆蒸馏跳过 — 没有新的记忆内容需要整理")
             except Exception as e:
                 logger.warning(f"[CowCli] /memory dream failed: {e}")
                 self._notify(e_context, f"❌ 记忆蒸馏失败: {e}")
 
-        thread = threading.Thread(target=_run, daemon=True)
-        thread.start()
+        threading.Thread(target=_run, daemon=True).start()
         return f"🌙 记忆蒸馏已启动 (整理近 {days} 天的记忆)\n\n整理在后台执行，完成后会通知你。"
+
+    def _memory_dream_sync(self, flush_mgr, days: int) -> str:
+        """Run deep dream synchronously and return the full result."""
+        try:
+            result = flush_mgr.deep_dream(lookback_days=days, force=True)
+            if result:
+                return self._build_dream_result(flush_mgr, is_web=True)
+            return "💤 记忆蒸馏跳过 — 没有新的记忆内容需要整理"
+        except Exception as e:
+            logger.warning(f"[CowCli] /memory dream sync failed: {e}")
+            return f"❌ 记忆蒸馏失败: {e}"
 
     @staticmethod
     def _notify(e_context, text: str):

@@ -339,6 +339,23 @@
 }
 .confirm-btn-ok:hover { background: #dc2626; }
 
+/* Session panel overlay (mobile only, click to close) */
+.session-panel-overlay {
+    display: none;
+}
+@media (max-width: 768px) {
+    .session-panel-overlay {
+        display: block;
+        position: fixed;
+        inset: 0;
+        z-index: 44;
+        background: rgba(0, 0, 0, 0.3);
+    }
+    .session-panel-overlay.hidden {
+        display: none;
+    }
+}
+
 /* Mobile: session panel as overlay */
 @media (max-width: 768px) {
     .session-panel {
@@ -935,13 +952,13 @@
     font-size: 8px;
     transition: transform 0.15s;
 }
-.knowledge-tree-group.open .chevron {
+.knowledge-tree-group.open > .knowledge-tree-group-btn .chevron {
     transform: rotate(90deg);
 }
 .knowledge-tree-group-items {
     display: none;
 }
-.knowledge-tree-group.open .knowledge-tree-group-items {
+.knowledge-tree-group.open > .knowledge-tree-group-items {
     display: block;
 }
 
