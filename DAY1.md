@@ -1,5 +1,19 @@
 # DAY1 学习笔记 — CowAgent 入口与消息链路
 
+## 学完后应该能回答的问题
+
+- [x] CowAgent 启动时做了哪些事？（load_config → ChannelManager → start）
+- [x] `channel_type` 为空时默认启动什么通道？（Web）
+- [x] `with self._lock:` 是什么语法？和 Java 的 synchronized 有什么关系？
+- [x] 为什么消息要入队？不入队会有什么问题？（HTTP 卡住 + 消息乱序）
+- [x] SSE 和普通 HTTP 有什么区别？（一次性返回 vs 持续推送）
+- [x] Bridge 是工具吗？它的作用是什么？（路由器，不是工具）
+- [x] 消息从浏览器到 AI 回复的完整链路是什么？（10 步流程）
+- [x] produce() 和 consume() 分别做了什么？（入队 vs 循环取消息派发）
+- [x] _handle() 的三步流水线是什么？（generate → decorate → send）
+- [x] 生产者-消费者、工厂模式、单例模式各解决什么问题？
+- [x] 这个项目用了 langchain 吗？（没有，全部手写）
+
 ## 一、config.py — 配置脱敏函数
 
 `drag_sensitive(config)` 函数用于对配置中的敏感字段（键名包含 "key" 或 "secret"）做脱敏处理：
