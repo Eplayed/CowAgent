@@ -206,7 +206,7 @@ cow install-browser
   "agent_max_context_tokens": 50000,                          # Agent 模式下最大上下文 tokens，超出将自动智能压缩处理
   "agent_max_context_turns": 20,                              # Agent 模式下最大上下文记忆轮次，一问一答为一轮，超出后智能压缩处理
   "agent_max_steps": 20,                                      # Agent 模式下单次任务的最大决策步数，超出后将停止继续调用工具
-  "enable_thinking": true                                     # 是否启用深度思考，开启后 Web 端展示模型推理过程，关闭后可加速响应
+  "enable_thinking": false                                    # 是否启用深度思考，开启后 Web 端展示模型推理过程，关闭后可加速响应
 }
 ```
 
@@ -499,7 +499,7 @@ sudo docker logs -f chatgpt-on-wechat
     "claude_api_key": "YOUR_API_KEY"
 }
 ```
- - `model`: 参考 [官方模型ID](https://docs.anthropic.com/en/docs/about-claude/models/overview#model-aliases) ，支持 `claude-sonnet-4-6、claude-opus-4-6、claude-sonnet-4-5、claude-sonnet-4-0、claude-opus-4-0、claude-3-5-sonnet-latest` 等
+ - `model`: 参考 [官方模型ID](https://docs.anthropic.com/en/docs/about-claude/models/overview#model-aliases) ，支持 `claude-sonnet-4-6、claude-opus-4-7、claude-opus-4-6、claude-sonnet-4-5、claude-sonnet-4-0、claude-opus-4-0、claude-3-5-sonnet-latest` 等
 </details>
 
 <details>

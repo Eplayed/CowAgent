@@ -269,6 +269,25 @@ class WebChannel(ChatChannel):
                 if tool_calls:
                     q.put({"type": "message_end", "has_tool_calls": True})
 
+            elif event_type == "agent_end":
+                # Safety net: if the agent finishes with an empty final_response,
+                # chat_channel skips _send_reply (because reply.content is empty),
+                # which means no "done" event is ever emitted and the SSE stream
+                # would hang until the 10-min idle timeout. Push a fallback "done"
+                # here so the frontend always gets closure.
+                final_response = data.get("final_response", "")
+                if not final_response or not str(final_response).strip():
+                    logger.warning(
+                        f"[WebChannel] agent_end with empty final_response for "
+                        f"request {request_id}, sending fallback done"
+                    )
+                    q.put({
+                        "type": "done",
+                        "content": "(模型未返回任何内容，请重试或换一种方式描述你的需求)",
+                        "request_id": request_id,
+                        "timestamp": time.time(),
+                    })
+
             elif event_type == "file_to_send":
                 file_path = data.get("path", "")
                 file_name = data.get("file_name", os.path.basename(file_path))
@@ -712,12 +731,12 @@ class ChatHandler:
 class ConfigHandler:
 
     _RECOMMENDED_MODELS = [
-        const.MINIMAX_M2_7, const.MINIMAX_M2_5, const.MINIMAX_M2_1, const.MINIMAX_M2_1_LIGHTNING,
+        const.MINIMAX_M2_7_HIGHSPEED, const.MINIMAX_M2_7, const.MINIMAX_M2_5, const.MINIMAX_M2_1, const.MINIMAX_M2_1_LIGHTNING,
         const.GLM_5_TURBO, const.GLM_5, const.GLM_4_7,
         const.QWEN36_PLUS, const.QWEN35_PLUS, const.QWEN3_MAX,
         const.KIMI_K2_5, const.KIMI_K2,
         const.DOUBAO_SEED_2_PRO, const.DOUBAO_SEED_2_CODE,
-        const.CLAUDE_4_6_SONNET, const.CLAUDE_4_6_OPUS, const.CLAUDE_4_5_SONNET,
+        const.CLAUDE_4_6_SONNET, const.CLAUDE_4_7_OPUS, const.CLAUDE_4_6_OPUS, const.CLAUDE_4_5_SONNET,
         const.GEMINI_31_FLASH_LITE_PRE, const.GEMINI_31_PRO_PRE, const.GEMINI_3_FLASH_PRE,
         const.GPT_54, const.GPT_54_MINI, const.GPT_54_NANO, const.GPT_5, const.GPT_41, const.GPT_4o,
         const.DEEPSEEK_CHAT, const.DEEPSEEK_REASONER,
@@ -764,7 +783,7 @@ class ConfigHandler:
             "api_key_field": "claude_api_key",
             "api_base_key": "claude_api_base",
             "api_base_default": "https://api.anthropic.com/v1",
-            "models": [const.CLAUDE_4_6_SONNET, const.CLAUDE_4_6_OPUS, const.CLAUDE_4_5_SONNET],
+            "models": [const.CLAUDE_4_6_SONNET, const.CLAUDE_4_7_OPUS, const.CLAUDE_4_6_OPUS, const.CLAUDE_4_5_SONNET],
         }),
         ("gemini", {
             "label": "Gemini",
@@ -871,7 +890,7 @@ class ConfigHandler:
                 "agent_max_context_tokens": local_config.get("agent_max_context_tokens", 50000),
                 "agent_max_context_turns": local_config.get("agent_max_context_turns", 20),
                 "agent_max_steps": local_config.get("agent_max_steps", 20),
-                "enable_thinking": bool(local_config.get("enable_thinking", True)),
+                "enable_thinking": bool(local_config.get("enable_thinking", False)),
                 "api_bases": api_bases,
                 "api_keys": api_keys_masked,
                 "providers": providers,
@@ -917,6 +936,19 @@ class ConfigHandler:
                 json.dump(file_cfg, f, indent=4, ensure_ascii=False)
 
             logger.info(f"[WebChannel] Config updated: {list(applied.keys())}")
+
+            # Reset Bridge so that bot routing reflects the new config.
+            # Without this, Bridge keeps its cached bot instance (e.g. LinkAIBot)
+            # even after the user switches bot_type / use_linkai / model in UI.
+            bridge_routing_keys = {"bot_type", "use_linkai", "model"}
+            if any(k in applied for k in bridge_routing_keys):
+                try:
+                    from bridge.bridge import Bridge
+                    Bridge().reset_bot()
+                    logger.info("[WebChannel] Bridge bot routing reset due to config change")
+                except Exception as reset_err:
+                    logger.warning(f"[WebChannel] Failed to reset bridge: {reset_err}")
+
             return json.dumps({"status": "success", "applied": applied}, ensure_ascii=False)
         except Exception as e:
             logger.error(f"Error updating config: {e}")

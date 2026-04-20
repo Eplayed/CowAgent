@@ -339,6 +339,7 @@ function createMd() {
 const md = createMd();
 
 const VIDEO_EXT_RE = /\.(?:mp4|webm|mov|avi|mkv)$/i;  // tested against URL without query string
+const IMAGE_EXT_RE = /\.(?:jpg|jpeg|png|gif|webp|bmp|svg)$/i;  // tested against URL without query string
 
 function _buildVideoHtml(url) {
     const fileName = url.split('/').pop().split('?')[0];
@@ -349,6 +350,15 @@ function _buildVideoHtml(url) {
         `<a href="${url}" target="_blank" ` +
         `style="display:inline-flex;align-items:center;gap:4px;margin-top:4px;font-size:12px;color:#8b8fa8;text-decoration:none;">` +
         `<i class="fas fa-download"></i> ${escapeHtml(fileName)}</a></div>`;
+}
+
+function _buildImageHtml(url) {
+    const safeUrl = url.replace(/"/g, '&quot;');
+    return `<div style="margin:10px 0;">` +
+        `<img src="${safeUrl}" alt="image" loading="lazy" ` +
+        `onclick="window.open('${safeUrl}','_blank')" ` +
+        `style="max-width:600px;width:100%;border-radius:10px;box-shadow:0 2px 8px rgba(0,0,0,0.15);display:block;cursor:pointer;">` +
+        `</div>`;
 }
 
 function injectVideoPlayers(html) {
@@ -369,10 +379,32 @@ function injectVideoPlayers(html) {
     }).join('');
 }
 
+// Convert image URLs into inline <img> previews. Mirrors injectVideoPlayers but for images.
+// Handles three cases produced by markdown-it:
+//   1. <a href="...image.jpg">...</a>  (bare URL or autolink that linkify turned into an anchor)
+//   2. <img src="...">                  (markdown image syntax) — leave as-is, but normalize style
+//   3. raw URL still present in a text node                    — only as a safety net
+function injectImagePreviews(html) {
+    // Step 1: anchor whose href points to an image file -> replace with <img> preview.
+    const step1 = html.replace(
+        /<a\s+href="(https?:\/\/[^"]+)"[^>]*>[^<]*<\/a>/gi,
+        (match, url) => IMAGE_EXT_RE.test(url.split('?')[0]) ? _buildImageHtml(url) : match
+    );
+    // Step 2: bare image URLs left in text nodes (rare — markdown-it's linkify usually catches them).
+    return step1.split(/(<[^>]+>)/).map((chunk, idx) => {
+        if (idx % 2 !== 0) return chunk;
+        return chunk.replace(/https?:\/\/\S+/gi, (url) => {
+            const bare = url.replace(/[),.\s]+$/, '');
+            return IMAGE_EXT_RE.test(bare.split('?')[0]) ? _buildImageHtml(bare) : url;
+        });
+    }).join('');
+}
+
 function renderMarkdown(text) {
     try {
         const html = md.render(text);
-        return injectVideoPlayers(html);
+        // Order matters: video first (more specific), then image.
+        return injectImagePreviews(injectVideoPlayers(html));
     }
     catch (e) { return text.replace(/\n/g, '<br>'); }
 }
@@ -2116,7 +2148,7 @@ function initConfigView(data) {
     document.getElementById('cfg-max-tokens').value = data.agent_max_context_tokens || 50000;
     document.getElementById('cfg-max-turns').value = data.agent_max_context_turns || 20;
     document.getElementById('cfg-max-steps').value = data.agent_max_steps || 20;
-    document.getElementById('cfg-enable-thinking').checked = data.enable_thinking !== false;
+    document.getElementById('cfg-enable-thinking').checked = data.enable_thinking === true;
 
     const pwdInput = document.getElementById('cfg-password');
     const maskedPwd = data.web_password_masked || '';
@@ -3565,6 +3597,7 @@ navigateTo = function(viewId) {
 // Knowledge View
 // =====================================================================
 let _knowledgeTreeData = [];
+let _knowledgeRootFiles = [];
 let _knowledgeCurrentFile = null;
 let _knowledgeGraphLoaded = false;
 
@@ -3582,7 +3615,9 @@ function loadKnowledgeView() {
         const statsEl = document.getElementById('knowledge-stats');
 
         const tree = data.tree || [];
+        const rootFiles = data.root_files || [];
         _knowledgeTreeData = tree;
+        _knowledgeRootFiles = rootFiles;
         const stats = data.stats || {};
         const totalPages = stats.pages || 0;
         const sizeStr = stats.size < 1024 ? stats.size + ' B' : (stats.size / 1024).toFixed(1) + ' KB';
@@ -3600,14 +3635,17 @@ function loadKnowledgeView() {
         emptyEl.classList.add('hidden');
         docsPanel.classList.remove('hidden');
 
-        renderKnowledgeTree(tree);
+        renderKnowledgeTree(tree, rootFiles);
 
         // Auto-select the first file (desktop only)
         if (window.innerWidth >= 768) {
-            const firstGroup = tree.find(g => g.files && g.files.length > 0);
-            if (firstGroup) {
-                const firstFile = firstGroup.files[0];
-                openKnowledgeFile(firstGroup.dir + '/' + firstFile.name, firstFile.title);
+            const firstFile = rootFiles.length > 0 ? rootFiles[0] : null;
+            const firstGroup = !firstFile ? tree.find(g => g.files && g.files.length > 0) : null;
+            if (firstFile) {
+                openKnowledgeFile(firstFile.name, firstFile.title);
+            } else if (firstGroup) {
+                const gf = firstGroup.files[0];
+                openKnowledgeFile(firstGroup.dir + '/' + gf.name, gf.title);
             }
         } else {
             document.getElementById('knowledge-content-placeholder').classList.add('hidden');
@@ -3616,10 +3654,26 @@ function loadKnowledgeView() {
     }).catch(() => {});
 }
 
-function renderKnowledgeTree(tree, filter) {
+function renderKnowledgeTree(tree, rootFilesOrFilter, filter) {
     const container = document.getElementById('knowledge-tree');
     container.innerHTML = '';
-    const lowerFilter = (filter || '').toLowerCase();
+    let rootFiles, lowerFilter;
+    if (typeof rootFilesOrFilter === 'string') {
+        rootFiles = _knowledgeRootFiles;
+        lowerFilter = (rootFilesOrFilter || '').toLowerCase();
+    } else {
+        rootFiles = rootFilesOrFilter || _knowledgeRootFiles;
+        lowerFilter = (filter || '').toLowerCase();
+    }
+    (rootFiles || []).forEach(f => {
+        if (lowerFilter && !f.title.toLowerCase().includes(lowerFilter) && !f.name.toLowerCase().includes(lowerFilter)) return;
+        const fbtn = document.createElement('button');
+        fbtn.className = 'knowledge-tree-file' + (_knowledgeCurrentFile === f.name ? ' active' : '');
+        fbtn.dataset.path = f.name;
+        fbtn.innerHTML = `<i class="fas fa-file-lines text-[10px] text-slate-400"></i><span class="truncate">${escapeHtml(f.title)}</span>`;
+        fbtn.onclick = () => openKnowledgeFile(f.name, f.title);
+        container.appendChild(fbtn);
+    });
     _renderKnowledgeGroups(container, tree, '', lowerFilter, 0);
 }
 
@@ -3684,7 +3738,7 @@ function _countFiles(group) {
 }
 
 function filterKnowledgeTree(query) {
-    renderKnowledgeTree(_knowledgeTreeData, query);
+    renderKnowledgeTree(_knowledgeTreeData, _knowledgeRootFiles, query);
 }
 
 function resolveKnowledgePath(currentFilePath, relativeHref) {
@@ -3763,6 +3817,9 @@ function bindChatKnowledgeLinks(container) {
 }
 
 function _findKnowledgeFileByName(filename) {
+    for (const f of _knowledgeRootFiles) {
+        if (f.name === filename) return { path: f.name, title: f.title };
+    }
     return _searchFileInGroups(_knowledgeTreeData, '', filename);
 }
 
@@ -4099,7 +4156,10 @@ function initApp() {
     _restoreSessionPanel();
 
     fetch('/api/knowledge/list').then(r => r.json()).then(data => {
-        if (data.status === 'success') _knowledgeTreeData = data.tree || [];
+        if (data.status === 'success') {
+            _knowledgeTreeData = data.tree || [];
+            _knowledgeRootFiles = data.root_files || [];
+        }
     }).catch(() => {});
 
     fetch('/api/version').then(r => r.json()).then(data => {
